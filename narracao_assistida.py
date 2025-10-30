@@ -26,6 +26,12 @@ latency_log = []
 ALERT_FRAMES_DIR = "./alert_frames"
 os.makedirs(ALERT_FRAMES_DIR, exist_ok=True)
 alert_log = []
+
+# MÉTRICA DE ESTABILIDADE DE CLASSE
+class_stability_log = []   # (frame_idx, id, cls, changed)
+_last_seen_classes = {}    # armazena a última classe vista por centro aproximado
+_class_switches = 0
+_total_tracked = 0
 ############################################
 
 ############################################
@@ -258,7 +264,7 @@ def speak(txt, priority=False):
 # 5) LOOP PRINCIPAL
 ############################################
 
-video_path = './videos/VID_20251015_183037787.mp4'
+video_path = './videos/WhatsApp Video 2025-10-29 at 20.59.15.mp4'
 cap = cv2.VideoCapture(video_path)
 prev_gray = None
 frame_idx = 0
@@ -339,6 +345,22 @@ while True:
                 'center_w': cweight,
                 'center': (cx, cy)
             })
+            # --- MÉTRICA: ESTABILIDADE DE CLASSE ---
+            # identifica o objeto pelo centro arredondado (para associar entre frames)
+            obj_id = (int(cx/20)*20, int(cy/20)*20)  # discretiza centro (reduz ruído)
+            prev_cls = _last_seen_classes.get(obj_id)
+            if prev_cls is None:
+                _last_seen_classes[obj_id] = cls
+                changed = 0
+            else:
+                if prev_cls != cls:
+                    _class_switches += 1
+                    _last_seen_classes[obj_id] = cls
+                    changed = 1
+                else:
+                    changed = 0
+            _total_tracked += 1
+            class_stability_log.append((frame_idx, cls, changed))
 
     target = None
     if candidates:
@@ -456,10 +478,17 @@ while True:
 cap.release()
 cv2.destroyAllWindows()
 
+if _total_tracked > 0:
+    estabilidade = 1 - (_class_switches / _total_tracked)
+    print(f"Estabilidade de classe: {estabilidade:.3f} ({_class_switches} trocas em {_total_tracked} rastros)")
+else:
+    print("Sem dados suficientes para medir estabilidade de classe.")
+
 ############################################
 # PROCESSAMENTO METRICAS
 ############################################
 metricas.salva_fps(fps_list, time_list)
 metricas.salva_latencia_csv(latency_log)
 metricas.salva_alertas(alert_log)
+metricas.salva_estabilidade_class(class_stability_log)
 ############################################

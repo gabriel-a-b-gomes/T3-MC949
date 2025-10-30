@@ -32,3 +32,11 @@ def salva_alertas(alert_log):
         for frame_idx, texto in alert_log:
             writer.writerow([frame_idx, texto])
     print("Log de alertas salvo em alert_log.csv")
+
+def salva_estabilidade_class(class_stability_log):
+    with open("class_stability.csv", mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f, delimiter=';')
+        writer.writerow(["frame_idx", "classe", "mudou"])
+        for frame_idx, cls, changed in class_stability_log:
+            writer.writerow([frame_idx, cls, changed])
+    print("Estabilidade de classe salva em class_stability.csv")
