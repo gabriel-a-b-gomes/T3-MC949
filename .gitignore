@@ -1,2 +1,5 @@
 videos/
 yolov*
+alert_frames/
+__pycache__
+venv

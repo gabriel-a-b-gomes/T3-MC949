@@ -6,6 +6,8 @@ import time
 import threading
 from queue import Queue
 import pyttsx3
+import metricas
+import os
 
 ############################################
 # CONFIG PRINCIPAL
@@ -13,6 +15,24 @@ import pyttsx3
 FAST_MODE = True
 FRAME_SKIP = 2
 USE_FLOW = False
+
+############################################
+# SETUP METRICAS
+############################################
+fps_list = []
+time_list = []
+total_start_time = time.time()
+latency_log = [] 
+ALERT_FRAMES_DIR = "./alert_frames"
+os.makedirs(ALERT_FRAMES_DIR, exist_ok=True)
+alert_log = []
+
+# MÉTRICA DE ESTABILIDADE DE CLASSE
+class_stability_log = []   # (frame_idx, id, cls, changed)
+_last_seen_classes = {}    # armazena a última classe vista por centro aproximado
+_class_switches = 0
+_total_tracked = 0
+############################################
 
 ############################################
 # 1) MODELOS: YOLO + MiDaS
@@ -164,7 +184,7 @@ _tts_lock = threading.Lock()
 def _tts_worker():
     last_phrase = None
     while True:
-        t = _tts_queue.get()
+        t, ts_frame = _tts_queue.get()
         if last_phrase != t or t == "Seguro para seguir":
             try:
                 print(f"[TTS] Falando: {t}")
@@ -175,6 +195,10 @@ def _tts_worker():
                 #     tts = gTTS(t, lang='pt-br')
                 #     tts.save(f.name)
                 #     playsound(f.name)
+
+                end_tts = time.time()
+                latency = end_tts - ts_frame
+                latency_log.append((ts_frame, t, latency))
             except: pass
             last_phrase = t
         _tts_queue.task_done()
@@ -220,6 +244,7 @@ def speak(txt, priority=False):
     
     global _last_speak_ts, _last_alert_ts
     now = time.time()
+    ts_frame = now
     if priority:
         if now - _last_alert_ts < MIN_ALERT_GAP_S: return
         with _tts_lock:
@@ -232,14 +257,14 @@ def speak(txt, priority=False):
         if now - _last_speak_ts < MIN_SPEAK_GAP_S: return
         _last_speak_ts = now
     try:
-        _tts_queue.put_nowait(txt)
+        _tts_queue.put_nowait((txt, ts_frame))
     except: pass
 
 ############################################
 # 5) LOOP PRINCIPAL
 ############################################
 
-video_path = './videos/VID_20251014_120019333.mp4'
+video_path = './videos/WhatsApp Video 2025-10-29 at 20.59.15.mp4'
 cap = cv2.VideoCapture(video_path)
 prev_gray = None
 frame_idx = 0
@@ -320,6 +345,22 @@ while True:
                 'center_w': cweight,
                 'center': (cx, cy)
             })
+            # --- MÉTRICA: ESTABILIDADE DE CLASSE ---
+            # identifica o objeto pelo centro arredondado (para associar entre frames)
+            obj_id = (int(cx/20)*20, int(cy/20)*20)  # discretiza centro (reduz ruído)
+            prev_cls = _last_seen_classes.get(obj_id)
+            if prev_cls is None:
+                _last_seen_classes[obj_id] = cls
+                changed = 0
+            else:
+                if prev_cls != cls:
+                    _class_switches += 1
+                    _last_seen_classes[obj_id] = cls
+                    changed = 1
+                else:
+                    changed = 0
+            _total_tracked += 1
+            class_stability_log.append((frame_idx, cls, changed))
 
     target = None
     if candidates:
@@ -397,22 +438,26 @@ while True:
                    "Desvie à esquerda." if direction == "à direita" else "Desvie à direita."
             
             fala = f"{cls_pt} próximo {direction}. {acao}"
+            metricas.armazena_alerta(ALERT_FRAMES_DIR, frame_idx, frame, fala, alert_log)
             speak(fala, priority=True)
             last_direction = direction
         
         elif (direction != last_direction):
             cls_pt = NOMES_PT.get(target['cls'], target['cls'])
             fala = f"{cls_pt} {direction}"
+            metricas.armazena_alerta(ALERT_FRAMES_DIR, frame_idx, frame, fala, alert_log)
             speak(fala, priority=True)
             last_direction = direction
             
     elif last_direction is not None:
         fala = "Caminho livre"
+        metricas.armazena_alerta(ALERT_FRAMES_DIR, frame_idx, frame, fala, alert_log)
         speak(fala)
         last_direction = None
         continue_time = time.time()
 
     if continue_time is not None and time.time() - continue_time > FREEPATHWAY_COOLDOWN:
+        metricas.armazena_alerta(ALERT_FRAMES_DIR, frame_idx, frame, fala, alert_log)
         fala = "Seguro para seguir"
         speak(fala)
         continue_time = time.time()
@@ -422,9 +467,28 @@ while True:
 
     fps = 1 / totalTime
 
+    current_time = time.time() - total_start_time
+    fps_list.append(fps)
+    time_list.append(current_time)
+
     cv2.putText(frame, f'FPS: {int(fps)}', (20,120), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0,255,0), 2)
     cv2.imshow("Etapa 4", frame)
     if cv2.waitKey(1) & 0xFF == ord('q'): break
 
 cap.release()
 cv2.destroyAllWindows()
+
+if _total_tracked > 0:
+    estabilidade = 1 - (_class_switches / _total_tracked)
+    print(f"Estabilidade de classe: {estabilidade:.3f} ({_class_switches} trocas em {_total_tracked} rastros)")
+else:
+    print("Sem dados suficientes para medir estabilidade de classe.")
+
+############################################
+# PROCESSAMENTO METRICAS
+############################################
+metricas.salva_fps(fps_list, time_list)
+metricas.salva_latencia_csv(latency_log)
+metricas.salva_alertas(alert_log)
+metricas.salva_estabilidade_class(class_stability_log)
+############################################
